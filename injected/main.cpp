@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <string_view>
 #include <fstream>
-#include "../detours/include/detours.h"
+#include "../Detours/src/detours.h"
 
 #pragma comment(lib, "../Detours/lib.X64/detours.lib")
 #pragma comment(lib, "Ws2_32.lib")
@@ -90,8 +90,7 @@ DWORD get_pid_by_process_name(string_view process_name)
 }
 
 decltype(sendto)* ws2_sendto = nullptr;
-decltype(recvfrom)* ws2_recvfrom = nullptr;
-decltype(bind)* ws2_bind = nullptr;
+decltype(getaddrinfo)* ws2_getaddrinfo = nullptr;
 string logfile;
 
 void update_server_txt(string content)
@@ -111,33 +110,8 @@ void update_hostname(string hostname)
     ++hostname_update_index;
 }
 
-void replace_server(const sockaddr* addr)
-{
-    char ip[46] = {};
-    auto addr_in = (sockaddr_in*)addr;
-    InetNtopA(addr_in->sin_family, &addr_in->sin_addr, ip, sizeof(ip));
-
-    if (DNS::get_hostname_by_address(ip) == "main") {
-        addr_in->sin_addr.s_addr = inet_addr(DNS::get_address_by_hostname("edge-09").c_str());
-    }
-}
-
-void restore_server(const sockaddr* addr)
-{
-    using namespace std::string_literals;
-    char ip[46] = {};
-    auto addr_in = (sockaddr_in*)addr;
-    InetNtopA(addr_in->sin_family, &addr_in->sin_addr, ip, sizeof(ip));
-
-    if (DNS::get_hostname_by_address(ip) == "edge-09") {
-        addr_in->sin_addr.s_addr = inet_addr(DNS::get_address_by_hostname("main").c_str());
-    }
-}
-
 int m_sendto(SOCKET s, char* buf, int len, int flags, const sockaddr* to, int tolen)
 {
-    replace_server(to);
-
     auto ret = ws2_sendto(s, buf, len, flags, to, tolen);
 
     char ip[46] = {};
@@ -153,25 +127,13 @@ int m_sendto(SOCKET s, char* buf, int len, int flags, const sockaddr* to, int to
     return ret;
 }
 
-int m_recvfrom(SOCKET s, char* buf, int len, int flags, sockaddr* from, int* fromlen)
+int m_getaddrinfo(PCSTR pNodeName, PCSTR pServiceName, const ADDRINFOA* pHints, PADDRINFOA* ppResult)
 {
-    replace_server(from);
+    if (pNodeName && pNodeName[0] == 's') { // spelunky-v20.mmo.gratis
+        pNodeName = "edge-09.spelunky2.net";
+    }
 
-    auto ret = ws2_recvfrom(s, buf, len, flags, from, fromlen);
-
-    if (len == 512 && buf[0] < 32)
-        restore_server(from);
-
-    return ret;
-}
-
-int m_bind(SOCKET s, const sockaddr* name, int namelen)
-{
-    replace_server(name);
-
-    auto ret = ws2_bind(s, name, namelen);
-
-    return ret;
+    return ws2_getaddrinfo(pNodeName, pServiceName, pHints, ppResult);
 }
 
 string get_spel2_exe_dir()
@@ -209,11 +171,9 @@ int main()
     auto ws2 = GetModuleHandleA("ws2_32.dll");
     if (ws2 == 0) throw std::runtime_error("cannot find ws2_32.dll");
     ws2_sendto = (decltype(ws2_sendto))GetProcAddress(ws2, "sendto");
-    ws2_recvfrom = (decltype(ws2_recvfrom))GetProcAddress(ws2, "recvfrom");
-    ws2_bind = (decltype(ws2_bind))GetProcAddress(ws2, "bind");
+    ws2_getaddrinfo = (decltype(ws2_getaddrinfo))GetProcAddress(ws2, "getaddrinfo");
     DetourAttach((void**)&ws2_sendto, m_sendto);
-    DetourAttach((void**)&ws2_recvfrom, m_recvfrom);
-    DetourAttach((void**)&ws2_sendto, m_sendto);
+    DetourAttach((void**)&ws2_getaddrinfo, m_getaddrinfo);
     LONG error = DetourTransactionCommit();
     thread(observe_send_interval).detach();
 }
